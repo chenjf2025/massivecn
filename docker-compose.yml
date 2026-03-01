@@ -1,0 +1,70 @@
+# 国内股票行情多源聚合网关 - Docker Compose
+# 支持 Apple Silicon (ARM64) 和 Ubuntu 22.04 (x86_64)
+
+version: '3.8'
+
+services:
+  tdengine:
+    image: tdengine/tdengine:3.2.3.0
+    container_name: stock_tdengine
+    hostname: tdengine
+    ports:
+      - "6030:6030"
+      - "6031:6031"
+      - "6032:6032"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - tdengine_data:/var/lib/taos
+      - tdengine_log:/var/log/taos
+    healthcheck:
+      test: ["CMD", "taos", "-s", "select server_version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stock_network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: stock_backend
+    hostname: backend
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - TDENGINE_HOST=tdengine
+      - TDENGINE_PORT=6030
+      - TDENGINE_USER=root
+      - TDENGINE_PASSWORD=taosdata
+    depends_on:
+      tdengine:
+        condition: service_healthy
+    networks:
+      - stock_network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: stock_frontend
+    hostname: frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - stock_network
+    restart: unless-stopped
+
+networks:
+  stock_network:
+    driver: bridge
+
+volumes:
+  tdengine_data:
+  tdengine_log:
