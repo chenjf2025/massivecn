@@ -278,7 +278,7 @@ async def get_history(
     )
     
     return HistoryResponse(
-        success=len(data) > 0,
+        success=True,
         symbol=symbol,
         interval=interval.value,
         data=data,

@@ -139,6 +139,18 @@ async function loadData() {
       chartData.value = result.data || []
       
       if (chartData.value.length === 0) {
+        ElMessage.warning('暂无数据 (TDengine数据库中无历史行情数据)')
+      } else {
+        // 等待 DOM 更新后渲染图表
+        await nextTick()
+        renderCharts()
+      }
+    } else {
+      ElMessage.error('查询失败: ' + (result.message || ''))
+    }
+      chartData.value = result.data || []
+      
+      if (chartData.value.length === 0) {
         ElMessage.warning('暂无数据')
       } else {
         // 等待 DOM 更新后渲染图表
