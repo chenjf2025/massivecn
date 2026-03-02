@@ -24,6 +24,11 @@ class StockQuote(BaseModel):
     ts: int
     timestamp: str
     symbol: str
+    stock_name: str = Field(default="", serialization_alias="stockName")
+    data_source: str = Field(serialization_alias="dataSource")
+    ts: int
+    timestamp: str
+    symbol: str
     data_source: str = Field(serialization_alias="dataSource")
     
     # Price fields - serialized as camelCase

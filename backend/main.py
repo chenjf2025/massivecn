@@ -23,6 +23,7 @@ from models import (
 )
 from database import tdengine_pool
 from parsers import ParserFactory
+from stock_map import get_stock_info, search_stocks, STOCK_MAP
 
 
 # -------------------- 全局状态 --------------------
@@ -86,6 +87,12 @@ app.add_middleware(
 async def fetch_quote_with_failover(symbol: str) -> QuoteResponse:
     start_time = time.time()
     
+    # 尝试解析股票代码 (支持名称/拼音)
+    original_symbol = symbol
+    resolved = resolve_symbol(symbol)
+    if resolved:
+        symbol = resolved
+    
     primary_sources = config_manager.get_primary_sources()
     backup_sources = config_manager.get_backup_sources()
     routing = config_manager.get_routing_config()
@@ -118,6 +125,12 @@ async def fetch_quote_with_failover(symbol: str) -> QuoteResponse:
                 STATS["success_requests"] += 1
                 STATS["sources_used"][source_config.name] = \
                     STATS["sources_used"].get(source_config.name, 0) + 1
+                
+                # 如果没有股票名称，尝试从映射获取
+                if not quote.stock_name:
+                    name, _ = get_stock_info(symbol)
+                    if name:
+                        quote.stock_name = name
                 
                 try:
                     WRITE_QUEUE.put_nowait(quote)
@@ -153,6 +166,22 @@ async def fetch_quote_with_failover(symbol: str) -> QuoteResponse:
         latency_ms=round(latency, 2),
         message=f"所有数据源均失败: {last_error}"
     )
+
+
+def resolve_symbol(keyword: str) -> Optional[str]:
+    """解析股票代码 (支持名称/拼音 -> 代码)"""
+    keyword = keyword.lower().strip()
+    
+    # 直接匹配
+    if keyword in STOCK_MAP:
+        return keyword
+    
+    # 搜索匹配
+    results = search_stocks(keyword)
+    if results:
+        return results[0]["symbol"]
+    
+    return None
 
 
 async def background_writer():
@@ -209,6 +238,40 @@ async def health_check():
         "timestamp": datetime.now().isoformat()
     }
 
+
+# -------------------- 搜索接口 --------------------
+
+@app.get("/api/v1/search")
+async def search_stocks_endpoint(q: str = Query(..., description="搜索关键词: 股票代码/名称/拼音")):
+    """搜索股票 (按代码、名称、拼音)"""
+    results = search_stocks(q)
+    return {
+        "success": True,
+        "data": results,
+        "count": len(results)
+    }
+
+
+@app.get("/api/v1/resolve")
+async def resolve_stock_endpoint(keyword: str = Query(..., description="股票代码/名称/拼音")):
+    """解析股票代码 (名称/拼音 -> 代码)"""
+    resolved = resolve_symbol(keyword)
+    if resolved:
+        name, pinyin = get_stock_info(resolved)
+        return {
+            "success": True,
+            "symbol": resolved,
+            "name": name,
+            "pinyin": pinyin
+        }
+    
+    return {
+        "success": False,
+        "message": f"未找到匹配的股票: {keyword}"
+    }
+
+
+# -------------------- 行情接口 --------------------
 
 @app.post("/api/v1/quote", response_model=QuoteResponse)
 async def get_quote(request: QuoteRequest):
@@ -268,6 +331,11 @@ async def get_history(
         end_dt = datetime.now()
     if not start_dt:
         start_dt = end_dt - timedelta(days=7)
+    
+    # 尝试解析股票代码
+    resolved = resolve_symbol(symbol)
+    if resolved:
+        symbol = resolved
     
     data = await tdengine_pool.query_history(
         symbol=symbol,
