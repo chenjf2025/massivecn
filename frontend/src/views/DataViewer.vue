@@ -41,10 +41,9 @@
             <el-option label="日线" value="1day" />
           </el-select>
         </el-form-item>
-        
         <el-form-item label="聚合">
-          <el-select v-model="queryForm.aggregation" style="width: 100px" placeholder="不聚合">
-            <el-option label="不聚合" :value="null" />
+          <el-select v-model="queryForm.aggregation" style="width: 100px">
+            <el-option label="不聚合" :value="undefined" />
             <el-option label="5分钟" :value="5" />
             <el-option label="15分钟" :value="15" />
             <el-option label="30分钟" :value="30" />
@@ -142,23 +141,10 @@ async function loadData() {
         ElMessage.warning('暂无数据 (TDengine数据库中无历史行情数据)')
       } else {
         // 等待 DOM 更新后渲染图表
-        await nextTick()
         renderCharts()
       }
     } else {
       ElMessage.error('查询失败: ' + (result.message || ''))
-    }
-      chartData.value = result.data || []
-      
-      if (chartData.value.length === 0) {
-        ElMessage.warning('暂无数据')
-      } else {
-        // 等待 DOM 更新后渲染图表
-        await nextTick()
-        renderCharts()
-      }
-    } else {
-      ElMessage.error('查询失败')
     }
   } catch (e) {
     ElMessage.error('查询异常: ' + e.message)

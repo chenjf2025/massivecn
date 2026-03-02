@@ -23,6 +23,10 @@ from models import (
 )
 from database import tdengine_pool
 from parsers import ParserFactory
+from kline_fetcher import kline_fetcher, KlineData
+from watchlist_db import get_all_groups, create_group, update_group, delete_group
+from watchlist_db import get_watchlist_stocks as _get_watchlist_stocks, add_stock, remove_stock, move_stock
+from watchlist_db import init_db as init_watchlist_db
 from stock_map import get_stock_info, search_stocks, STOCK_MAP
 
 
@@ -56,6 +60,15 @@ async def lifespan(app: FastAPI):
     
     asyncio.create_task(background_writer())
     logger.info("异步落库任务已启动")
+    
+    try:
+        init_watchlist_db()
+        logger.info("自选股数据库初始化成功")
+    except Exception as e:
+        logger.error(f"自选股数据库初始化失败: {e}")
+    
+    asyncio.create_task(kline_sync_worker())
+    logger.info("K线同步任务已启动")
     
     yield
     
@@ -218,6 +231,35 @@ async def background_writer():
             await asyncio.sleep(1)
 
 
+# 默认股票列表
+DEFAULT_WATCHLIST = [
+    "sh600000", "sh600519", "sh600036", "sh000001",
+    "sz000001", "sz000858", "sz300750", "sh601318",
+]
+
+async def kline_sync_worker():
+    logger.info("K线同步任务已启动")
+    fetch_interval = 3600
+    days_to_fetch = 30
+    while True:
+        try:
+            for symbol in DEFAULT_WATCHLIST:
+                try:
+                    klines = await kline_fetcher.fetch_kline(symbol, interval="1day", days=days_to_fetch)
+                    if klines:
+                        count = await tdengine_pool.batch_insert_klines(klines, symbol)
+                        if count > 0:
+                            logger.info(f"K线同步: {symbol}, {count} 条")
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"K线同步失败: {symbol}, {e}")
+                    await asyncio.sleep(1)
+            await asyncio.sleep(fetch_interval)
+        except Exception as e:
+            logger.error(f"K线同步任务异常: {e}")
+            await asyncio.sleep(60)
+
+
 # -------------------- API 路由 --------------------
 
 @app.get("/")
@@ -345,6 +387,38 @@ async def get_history(
         aggregation=aggregation
     )
     
+    if len(data) == 0:
+        logger.info(f"无历史数据，尝试获取K线: {symbol}")
+        kline_interval = "1day"
+        if interval.value == "60min": kline_interval = "60min"
+        elif interval.value == "30min": kline_interval = "30min"
+        elif interval.value == "15min": kline_interval = "15min"
+        elif interval.value == "5min": kline_interval = "5min"
+        elif interval.value == "1min": kline_interval = "1min"
+        
+        days = (end_dt - start_dt).days + 1
+        if days < 1: days = 7
+        
+        klines = await kline_fetcher.fetch_kline(symbol, interval=kline_interval, days=min(days, 60))
+        
+        if klines:
+            filtered = [k for k in klines if start_dt <= datetime.fromisoformat(k.timestamp) <= end_dt]
+            if filtered:
+                await tdengine_pool.batch_insert_klines(filtered, symbol)
+                logger.info(f"K线已存储: {symbol}, {len(filtered)} 条")
+            
+            from models import HistoryDataPoint
+            for k in filtered:
+                dt = datetime.fromisoformat(k.timestamp)
+                data.append(HistoryDataPoint(
+                    ts=int(dt.timestamp() * 1000), timestamp=k.timestamp,
+                    open=k.open, high=k.high, low=k.low, close=k.close,
+                    volume=k.volume, amount=k.amount,
+                    vwap=round(k.amount / k.volume, 2) if k.volume > 0 else 0,
+                    main_net_inflow=0
+                ))
+            data.sort(key=lambda x: x.timestamp)
+    
     return HistoryResponse(
         success=True,
         symbol=symbol,
@@ -433,6 +507,129 @@ async def get_system_status():
             "queue_size": WRITE_QUEUE.qsize()
         }
     )
+
+
+# ==================== 自选股 API ====================
+
+@app.get("/api/v1/watchlist/groups")
+async def get_watchlist_groups():
+    try:
+        groups = get_all_groups(user_id=1)
+        return {"success": True, "data": groups}
+    except Exception as e:
+        logger.error(f"获取分组失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/v1/watchlist/groups")
+async def create_watchlist_group(name: str = Query(...), color: str = Query('#409EFF')):
+    try:
+        group = create_group(user_id=1, name=name, color=color)
+        return {"success": True, "data": group}
+    except Exception as e:
+        logger.error(f"创建分组失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.put("/api/v1/watchlist/groups/{group_id}")
+async def update_watchlist_group(group_id: int, name: str = Query(None), color: str = Query(None)):
+    try:
+        success = update_group(group_id, name=name, color=color)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"更新分组失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.delete("/api/v1/watchlist/groups/{group_id}")
+async def delete_watchlist_group(group_id: int):
+    try:
+        success = delete_group(group_id)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"删除分组失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.get("/api/v1/watchlist/{group_id}")
+async def get_watchlist_stocks_api(group_id: int):
+    try:
+        stocks = _get_watchlist_stocks(group_id, user_id=1)
+        
+        if stocks:
+            symbols = [s["symbol"] for s in stocks]
+            try:
+                quote_dict = {}
+                for sym in symbols:
+                    try:
+                        result = await fetch_quote_with_failover(sym)
+                        if result and result.success and result.data:
+                            data = result.data
+                            quote_dict[sym] = {
+                                "current_price": data.current_price,
+                                "change": data.change,
+                                "change_pct": data.change_pct,
+                                "stock_name": data.stock_name,
+                                "support": round(data.current_price * 0.95, 2) if data.current_price else 0,
+                                "resistance": round(data.current_price * 1.05, 2) if data.current_price else 0,
+                            }
+                    except:
+                        pass
+                
+                for stock in stocks:
+                    sym = stock["symbol"]
+                    if sym in quote_dict:
+                        q = quote_dict[sym]
+                        stock["current_price"] = q.get("current_price", 0)
+                        stock["change"] = q.get("change", 0)
+                        stock["change_pct"] = q.get("change_pct", 0)
+                        stock["support"] = q.get("support", 0)
+                        stock["resistance"] = q.get("resistance", 0)
+                        if q.get("stock_name"):
+                            stock["stock_name"] = q["stock_name"]
+            except Exception as e:
+                logger.warning(f"获取实时行情失败: {e}")
+        
+        return {"success": True, "data": stocks}
+    except Exception as e:
+        logger.error(f"获取自选股失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/v1/watchlist/stocks")
+async def add_watchlist_stock(group_id: int = Query(...), symbol: str = Query(...), stock_name: str = Query('')):
+    try:
+        resolved = resolve_symbol(symbol)
+        if resolved:
+            symbol = resolved
+        success = add_stock(user_id=1, group_id=group_id, symbol=symbol, stock_name=stock_name)
+        return {"success": success, "message": "" if success else "股票已存在"}
+    except Exception as e:
+        logger.error(f"添加自选股失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.delete("/api/v1/watchlist/stocks/{stock_id}")
+async def remove_watchlist_stock(stock_id: int):
+    try:
+        success = remove_stock(stock_id, user_id=1)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"删除自选股失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.put("/api/v1/watchlist/stocks/{stock_id}/move")
+async def move_watchlist_stock(stock_id: int, new_group_id: int = Query(...)):
+    try:
+        success = move_stock(stock_id, new_group_id, user_id=1)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"移动自选股失败: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.exception_handler(Exception)
 
 
 @app.exception_handler(Exception)

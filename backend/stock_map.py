@@ -258,5 +258,57 @@ def search_stocks(keyword: str) -> list[dict]:
                 "name": name,
                 "pinyin": pinyin
             })
-    
     return results
+
+
+import httpx
+
+
+async def search_stocks_external(keyword: str) -> list[dict]:
+    """外部API搜索股票 (混合模式 - 当本地映射表找不到时使用)"""
+    keyword = keyword.strip()
+    if not keyword:
+        return []
+    
+    url = f"http://suggest3.sinajs.cn/suggest/type=&key={keyword}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(url)
+            response.encoding = 'gbk'
+            text = response.text
+    except Exception as e:
+        return []
+    
+    try:
+        import re
+        match = re.search(r'var suggestvalue="(.+)"', text)
+        if not match:
+            return []
+        
+        data_str = match.group(1)
+        results = []
+        for item in data_str.split(';'):
+            if not item:
+                continue
+            info = item.split(',')
+            if len(info) >= 4:
+                name = info[0]
+                code = info[2]
+                market = info[3]
+                if market in ['sz', 'sh']:
+                    symbol = market + code
+                elif code.startswith('6'):
+                    symbol = 'sh' + code
+                elif code.startswith('0') or code.startswith('3'):
+                    symbol = 'sz' + code
+                else:
+                    continue
+                results.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "pinyin": ""
+                })
+        return results[:10]
+    except:
+        return []

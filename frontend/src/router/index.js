@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Dashboard from '../views/Dashboard.vue'
 import ConfigManager from '../views/ConfigManager.vue'
 import DataViewer from '../views/DataViewer.vue'
+import Watchlist from '../views/Watchlist.vue'
 
 const routes = [
   {
@@ -19,6 +20,11 @@ const routes = [
     path: '/data',
     name: 'DataViewer',
     component: DataViewer
+  },
+  {
+    path: '/watchlist',
+    name: 'Watchlist',
+    component: Watchlist
   }
 ]
 

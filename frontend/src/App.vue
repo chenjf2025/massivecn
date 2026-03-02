@@ -22,6 +22,10 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>数据看板</span>
         </el-menu-item>
+        <el-menu-item index="/watchlist">
+          <el-icon><Star /></el-icon>
+          <span>自选股</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     
@@ -46,7 +50,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Monitor, Setting, DataAnalysis } from '@element-plus/icons-vue'
+import { Monitor, Setting, DataAnalysis, Star } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const activeMenu = computed(() => route.path)

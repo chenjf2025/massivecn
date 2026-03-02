@@ -82,10 +82,6 @@
               <template #default="{ row }">
                 {{ (row.successRate * 100).toFixed(1) }}%
               </template>
-            <el-table-column prop="success_rate" label="成功率" width="100">
-              <template #default="{ row }">
-                {{ (row.success_rate * 100).toFixed(1) }}%
-              </template>
             </el-table-column>
           </el-table>
         </el-card>
@@ -101,11 +97,11 @@
           </template>
           
           <el-form inline>
-            <el-form-item label="股票代码">
+            <el-form-item label="股票代码/名称/拼音">
               <el-input
                 v-model="quickSymbol"
-                placeholder="如: sh600000"
-                style="width: 180px"
+                placeholder="如: sh600000, 贵州茅台, gzmt"
+                style="width: 220px"
               />
             </el-form-item>
             <el-form-item>
@@ -119,6 +115,9 @@
             <el-descriptions :column="4" border>
               <el-descriptions-item label="股票代码">
                 {{ quoteData.symbol }}
+              </el-descriptions-item>
+              <el-descriptions-item label="股票名称" v-if="quoteData.stockName">
+                {{ quoteData.stockName }}
               </el-descriptions-item>
               <el-descriptions-item label="数据源">
                 <el-tag size="small">{{ quoteData.dataSource }}</el-tag>
@@ -140,7 +139,31 @@
               <el-descriptions-item label="成交量">
                 {{ formatVolume(quoteData.tradingVolume) }}
               </el-descriptions-item>
+              <el-descriptions-item label="主力净流入">
+                {{ formatVolume(quoteData.mainNetInflow) }}
+              </el-descriptions-item>
             </el-descriptions>
+            
+            <!-- 历史行情 -->
+            <div v-if="historyData.length > 0" class="history-section">
+              <h4>最近交易日</h4>
+              <el-table :data="historyData" size="small" stripe>
+                <el-table-column prop="timestamp" label="日期" width="180">
+                  <template #default="{ row }">
+                    {{ formatDate(row.timestamp) }}
+                  </template>
+                </el-table-column>
+                <el-table-column prop="open" label="开盘" width="80" />
+                <el-table-column prop="high" label="最高" width="80" />
+                <el-table-column prop="low" label="最低" width="80" />
+                <el-table-column prop="close" label="收盘" width="80" />
+                <el-table-column prop="volume" label="成交量" width="100">
+                  <template #default="{ row }">
+                    {{ formatVolume(row.volume) }}
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
           </div>
         </el-card>
       </el-col>
@@ -150,13 +173,15 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getSystemStatus, getQuote } from '../api'
+import { getSystemStatus, getQuote, getHistory, resolveStock } from '../api'
 import { ElMessage } from 'element-plus'
+import dayjs from 'dayjs'
 
 const statusData = ref({})
 const quickSymbol = ref('')
 const queryLoading = ref(false)
 const quoteData = ref(null)
+const historyData = ref([])
 
 // 刷新状态
 async function refreshStatus() {
@@ -176,10 +201,42 @@ async function quickQuery() {
   }
   
   queryLoading.value = true
+  historyData.value = []
+  
   try {
-    const result = await getQuote(quickSymbol.value)
+    // 先解析股票代码 (支持名称/拼音)
+    let symbol = quickSymbol.value
+    let resolvedName = ''
+    const resolveResult = await resolveStock(quickSymbol.value)
+    if (resolveResult.success) {
+      symbol = resolveResult.symbol
+      resolvedName = resolveResult.name
+    }
+    
+    // 获取实时行情
+    const result = await getQuote(symbol)
     if (result.success) {
+      // 如果返回的数据没有股票名称，但解析结果有名称，则填充
+      if (!result.data.stockName && resolvedName) {
+        result.data.stockName = resolvedName
+      }
       quoteData.value = result.data
+      
+      // 获取历史数据 (最近7天)
+      try {
+        const historyResult = await getHistory(symbol, { 
+          interval: '1day',
+          start_time: dayjs().subtract(7, 'day').format('YYYY-MM-DD') + 'T00:00:00',
+          end_time: dayjs().format('YYYY-MM-DD') + 'T23:59:59'
+        })
+        if (historyResult.success && historyResult.data) {
+          // 按时间倒序排列
+          historyData.value = historyResult.data.reverse().slice(0, 10)
+        }
+      } catch (e) {
+        console.warn('获取历史数据失败', e)
+      }
+      
       ElMessage.success('查询成功')
     } else {
       ElMessage.error(result.message || '查询失败')
@@ -205,10 +262,16 @@ function formatUptime(seconds) {
 
 // 格式化成交量
 function formatVolume(v) {
-  if (!v) return '0'
-  if (v >= 100000000) return (v / 100000000).toFixed(2) + '亿'
-  if (v >= 10000) return (v / 10000).toFixed(2) + '万'
+  if (!v && v !== 0) return '-'
+  if (Math.abs(v) >= 100000000) return (v / 100000000).toFixed(2) + '亿'
+  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2) + '万'
   return v.toString()
+}
+
+// 格式化日期
+function formatDate(timestamp) {
+  if (!timestamp) return '-'
+  return dayjs(timestamp).format('YYYY-MM-DD HH:mm')
 }
 
 onMounted(() => {
@@ -258,6 +321,17 @@ onMounted(() => {
 
 .quote-result {
   margin-top: 20px;
+}
+
+.history-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.history-section h4 {
+  margin-bottom: 10px;
+  color: #333;
 }
 
 .price-up {

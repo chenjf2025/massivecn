@@ -7,6 +7,7 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 from config_manager import config_manager
 from models import StockQuote, HistoryDataPoint
+from kline_fetcher import KlineData
 
 
 class TDenginePool:
@@ -142,4 +143,44 @@ class TDenginePool:
             return {"today_ingested": 0, "avg_latency_ms": 0}
 
 
+    async def insert_kline(self, kline: KlineData, symbol: str, interval: str = "1day"):
+        """插入K线数据"""
+        db_name = self._config.database
+        try:
+            # 解析时间戳
+            dt = datetime.fromisoformat(kline.timestamp)
+            ts_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            
+            sql = f"""INSERT INTO {db_name}.stock_quotes 
+                (ts, symbol, data_source, open_price, high_price, low_price, close_price, trading_volume, trading_amount)
+                VALUES 
+                ('{ts_str}', '{symbol}', 'kline_fetcher', {kline.open}, {kline.high}, {kline.low}, {kline.close}, {int(kline.volume)}, {int(kline.amount)})
+            """
+            result = await self._execute_sql(sql)
+            return result is not None
+        except Exception as e:
+            logger.error(f"K线插入失败: {e}")
+            return False
+    
+    async def batch_insert_klines(self, klines: List[KlineData], symbol: str) -> int:
+        """批量插入K线数据"""
+        if not klines:
+            return 0
+        
+        db_name = self._config.database
+        try:
+            sql_parts = []
+            for kline in klines:
+                dt = datetime.fromisoformat(kline.timestamp)
+                ts_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                sql = f"('{ts_str}', '{symbol}', 'kline_fetcher', {kline.open}, {kline.high}, {kline.low}, {kline.close}, {int(kline.volume)}, {int(kline.amount)})"
+                sql_parts.append(sql)
+            
+            full_sql = f"INSERT INTO {db_name}.stock_quotes (ts, symbol, data_source, open_price, high_price, low_price, close_price, trading_volume, trading_amount) VALUES {','.join(sql_parts)}"
+            result = await self._execute_sql(full_sql)
+            if result is not None:
+                return len(klines)
+        except Exception as e:
+            logger.error(f"批量K线插入失败: {e}")
+        return 0
 tdengine_pool = TDenginePool()
